@@ -1,0 +1,95 @@
+import secrets
+# --- S-Box بهینه (از رمز PRESENT) ---
+SBOX = [0xC, 0x5, 0x6, 0xB, 0x9, 0x0, 0xA, 0xD, 0x3, 0xE, 0xF, 0x8, 0x4, 0x7, 0x1, 0x2]
+
+def apply_sbox(val):
+    output = 0
+    for i in range(8):  # 8 * 4 = 32 بیت
+        nibble = (val >> (i * 4)) & 0xF
+        output |= SBOX[nibble] << (i * 4)
+    return output
+
+# --- تابع F پیچیده ---
+def F(r, k):
+    rotate_amount = (r ^ k) & 0x1F  # وابسته به ورودی
+    k_rotated = ((k << rotate_amount) | (k >> (32 - rotate_amount))) & 0xFFFFFFFF
+
+    x = r ^ k_rotated
+    x = apply_sbox(x)
+
+    # انتشار بالا
+    x = ((x << 11) ^ (x >> 5) ^ (x << 3)) & 0xFFFFFFFF
+
+    x = apply_sbox(x ^ r)
+    return x
+
+# --- زیرکلیدها ---
+def rotate_left(x, n, bits=32):
+    return ((x << n) | (x >> (bits - n))) & (2**bits - 1)
+
+def nonlinear_mix(x):
+    x = apply_sbox(x)
+    x ^= (x << 5) ^ (x >> 3)
+    x = apply_sbox(x ^ 0xA5A5A5A5)
+    return rotate_left(x, 11)
+
+def generate_subkeys(key, rounds):
+    subkeys = []
+    temp = key ^ 0x3C6EF372
+    for i in range(rounds):
+        temp = nonlinear_mix(temp ^ (i * 0x9E3779B9))
+        subkeys.append(temp)
+    return subkeys
+
+# --- رمزنگاری یک بلاک ---
+def feistel_encrypt_block(block, key, rounds=12):  # افزایش دورها
+    L, R = (block >> 32) & 0xFFFFFFFF, block & 0xFFFFFFFF
+    subkeys = generate_subkeys(key, rounds)
+    for i in range(rounds):
+        L, R = R, L ^ F(R, subkeys[i])
+    return (L << 32) | R
+
+# --- رمزگشایی یک بلاک ---
+def feistel_decrypt_block(block, key, rounds=12):
+    L, R = (block >> 32) & 0xFFFFFFFF, block & 0xFFFFFFFF
+    subkeys = generate_subkeys(key, rounds)
+    for i in reversed(range(rounds)):
+        L, R = R ^ F(L, subkeys[i]), L
+    return (L << 32) | R
+
+# --- ابزارهای کمکی با پدینگ PKCS#7 ---
+def string_to_blocks(s):
+    data = s.encode('utf-8')
+    padding_len = 8 - (len(data) % 8)
+    data += bytes([padding_len] * padding_len)  # PKCS#7 padding
+    blocks = []
+    for i in range(0, len(data), 8):
+        block = data[i:i+8]
+        blocks.append(int.from_bytes(block, 'big'))
+    return blocks
+
+def blocks_to_string(blocks):
+    result = b''.join(block.to_bytes(8, 'big') for block in blocks)
+    padding_len = result[-1]
+    result = result[:-padding_len]  # حذف پدینگ
+    return result.decode('utf-8', errors='ignore')
+
+def encrypt(text, key):
+    blocks = string_to_blocks(text)
+    encrypted = [feistel_encrypt_block(b, key) for b in blocks]
+    return encrypted
+
+def decrypt(blocks, key):
+    decrypted = [feistel_decrypt_block(b, key) for b in blocks]
+    return blocks_to_string(decrypted)
+
+# --- تست نهایی ---
+text = "salam in yek test ast"
+key = secrets.randbits(64)  # کلید تصادفی 64 بیتی
+encrypted = encrypt(text, key)
+print("Encrypted blocks:")
+for b in encrypted:
+    print(hex(b))
+
+decrypted = decrypt(encrypted, key)
+print("Decrypted text:", decrypted)
